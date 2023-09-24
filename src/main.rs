@@ -2,29 +2,33 @@ use std::fs;
 use std::process;
 use std::env;
 use std::ops::Index;
+use std::rc::Rc;
 
 fn exit_with_err_at(file_path: &str, line_i: usize, col_i: usize, msg: &str) -> !{
 	eprintln!("{}:{}:{} Error: {}", file_path, line_i+1, col_i+1, msg);
 	process::exit(1);
 }
 
+#[derive(Clone, Debug)]
 pub struct Coord {
 	x: usize,
 	y: usize,
 }
 
 #[derive(Clone, Debug)]
-pub struct Formula {
-
+pub enum Formula {
+	Function(String, Vec<Rc<Formula>>),
+	Reference(Coord),
+	Litteral(Rc<CellValue>),
 }
 
 #[derive(Clone, Debug)]
-enum CellErr {
+pub enum CellErr {
 	InvalidType,
 }
 
 #[derive(Clone, Debug)]
-enum CellValue {
+pub enum CellValue {
 	Empty,
 	String(String),
 	Number(f64),
@@ -71,7 +75,7 @@ impl Sheet {
 							curr = match chr {
 								' ' | '\t' => None,
 								'"' => Some(CellValue::String(String::new())),
-								'=' => Some(CellValue::Formula(Formula {})),
+								'=' => Some(CellValue::Formula(Formula::Litteral(CellValue::Empty.into()))),
 								'-' | '+' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => Some(CellValue::Number(0.0)),
 								c => exit_with_err_at(&file_path, i, j, format!("could not parse `{}` as any valid type", c).as_str())
 							}
