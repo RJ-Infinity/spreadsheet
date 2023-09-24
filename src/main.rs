@@ -59,7 +59,6 @@ impl Sheet {
 			let mut curr: Option<CellValue> = None;
 			let mut tmp_str = String::new();
 			let mut val_end = false;
-			let mut val_start = false;
 			let mut in_esc = false;
 			for (j, chr) in line.chars().enumerate() {
 				// print!("===========================\nchr: {:#?}\nrv: {:#?}\ncurr: {:#?}\ntmp_str: {:#?}\nval_end: {:#?}\nin_esc: {:#?}\n",chr,rv,curr,tmp_str,val_end,in_esc);
@@ -73,7 +72,8 @@ impl Sheet {
 								' ' | '\t' => None,
 								'"' => Some(CellValue::String(String::new())),
 								'=' => Some(CellValue::Formula(Formula {})),
-								_ => Some(CellValue::Number(0.0)),
+								'-' | '+' | '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' => Some(CellValue::Number(0.0)),
+								c => exit_with_err_at(&file_path, i, j, format!("could not parse `{}` as any valid type", c).as_str())
 							}
 						}
 					}
@@ -99,15 +99,33 @@ impl Sheet {
 								c => {s.push(c)},
 							}}
 						}
-						CellValue::Number(_n) => todo!(),
+						CellValue::Number(ref mut n) => {if chr == ',' {
+							*n = tmp_str.strip_suffix(",").unwrap().trim().replace("_", "").parse().unwrap();
+							Self::append_cell(&mut rv, &mut tmp_str, v.clone(), &mut curr);
+							val_end = false;
+						} else if !val_end { match chr {
+							'0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '_' => {/* do nothing */},
+							' ' | '\t' => val_end = true,
+							'-' | '+' => exit_with_err_at(&file_path, i, j, "Plus and Minus symbols can only be at the start of a number. To calculate a value use a formula."),
+							d => exit_with_err_at(&file_path, i, j, format!("`{}` is not a valid digit in what was parsed as a number if you want a string use quotes (`\"`) if you want an formula start it with an equals (`=`).", d).as_str()),
+						}}else if chr != ' ' && chr != '\t' { exit_with_err_at(&file_path, i, j, "Only whitespace allowed after the end of a number. If you want a break in the number use an underscore (`_`).")}},
 						CellValue::Formula(_f) => todo!(),
 						_ => unreachable!(),
 					}
 				}
 			}
-			match curr {
-				Some(v) => Self::append_cell(&mut rv, &mut tmp_str, v.clone(), &mut None),
-				None=>{},
+			if let Some(ref mut v) = curr {
+				match v {
+					CellValue::String(_) => {},
+					CellValue::Number(ref mut n) => { *n = tmp_str.trim().replace("_", "").parse().unwrap(); }
+					CellValue::Formula(_f) => todo!(),
+					_ => unreachable!(),
+				}
+				rv.push(Cell {
+					value: v.clone(),
+					string_backing: Some(tmp_str),
+					changed: false,
+				});
 			}
 			return rv;
 		}).collect::<Vec<_>>(), file_path: file_path };
