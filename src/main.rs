@@ -2,7 +2,7 @@ use std::fs;
 use std::process;
 use std::env;
 use std::ops::Index;
-use std::rc::Rc;
+use std::boxed::Box;
 
 fn exit_with_err_at(file_path: &str, line_i: usize, col_i: usize, msg: &str) -> !{
 	eprintln!("{}:{}:{} Error: {}", file_path, line_i+1, col_i+1, msg);
@@ -17,9 +17,9 @@ pub struct Coord {
 
 #[derive(Clone, Debug)]
 pub enum Formula {
-	Function(String, Vec<Rc<Formula>>),
+	Function(String, Vec<Box<Formula>>),
 	Reference(Coord),
-	Litteral(Rc<CellValue>),
+	Litteral(Box<CellValue>),
 }
 
 #[derive(Clone, Debug)]
