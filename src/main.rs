@@ -1,9 +1,12 @@
-use core::panic;
-use std::borrow::BorrowMut;
 use std::fs;
 use std::process;
 use std::env;
 use std::ops::Index;
+
+fn exit_with_err_at(file_path: &str, line_i: usize, col_i: usize, msg: &str) -> !{
+	eprintln!("{}:{}:{} Error: {}", file_path, line_i+1, col_i+1, msg);
+	process::exit(1);
+}
 
 pub struct Coord {
 	x: usize,
@@ -37,6 +40,7 @@ pub struct Cell{
 #[derive(Debug)]
 pub struct Sheet{
 	cells: Vec<Vec<Cell>>,
+	file_path: String,
 }
 impl Sheet {
 	fn append_cell(cells: &mut Vec<Cell>, tmp_str: &mut String, value: CellValue, curr: &mut Option<CellValue>) {
@@ -49,15 +53,16 @@ impl Sheet {
 		tmp_str.clear();
 		*curr = None;
 	}
-	pub fn new(str: String) -> Self {
-		return Sheet { cells: str.split("\n").map(|line| {
+	pub fn new(file_path:String, str: String) -> Self {
+		return Sheet { cells: str.replace("\r","").split("\n").enumerate().map(|(i, line)| {
 			let mut rv: Vec<Cell> = Vec::new();
 			let mut curr: Option<CellValue> = None;
 			let mut tmp_str = String::new();
-			let mut str_end = false;
+			let mut val_end = false;
+			let mut val_start = false;
 			let mut in_esc = false;
-			for chr in line.chars() {
-				// print!("===========================\nchr: {:#?}\nrv: {:#?}\ncurr: {:#?}\ntmp_str: {:#?}\nstr_end: {:#?}\nin_esc: {:#?}\n",chr,rv,curr,tmp_str,str_end,in_esc);
+			for (j, chr) in line.chars().enumerate() {
+				// print!("===========================\nchr: {:#?}\nrv: {:#?}\ncurr: {:#?}\ntmp_str: {:#?}\nval_end: {:#?}\nin_esc: {:#?}\n",chr,rv,curr,tmp_str,val_end,in_esc);
 				tmp_str.push(chr);
 				match curr {
 					None => {
@@ -74,20 +79,23 @@ impl Sheet {
 					}
 					Some(ref mut v) => match v {
 						CellValue::String(ref mut s) => {
-							if str_end { 
+							if val_end { 
 								if chr == ',' {
 									Self::append_cell(&mut rv, &mut tmp_str, v.clone(), &mut curr);
-									str_end = false;
+									val_end = false;
 								}
-							} else if in_esc { s.push(match chr {
-								'\\' | '"' => chr,
-								'n' => '\n',
-								't' => '\t',
-								'r' => '\r',
-								_ => panic!("Unknown escape sequence"),
-							});} else { match chr {
+							} else if in_esc {
+								s.push(match chr {
+									'\\' | '"' => chr,
+									'n' => '\n',
+									't' => '\t',
+									'r' => '\r',
+									_ => exit_with_err_at(&file_path, i, j-1, "Unknown escape sequence."), //remove 1 from j to get the slash loc
+								});
+								in_esc = false;
+							} else { match chr {
 								'\\' => {in_esc = true;},
-								'"' => {str_end = true},
+								'"' => {val_end = true},
 								c => {s.push(c)},
 							}}
 						}
@@ -97,8 +105,12 @@ impl Sheet {
 					}
 				}
 			}
+			match curr {
+				Some(v) => Self::append_cell(&mut rv, &mut tmp_str, v.clone(), &mut None),
+				None=>{},
+			}
 			return rv;
-		}).collect::<Vec<_>>() };
+		}).collect::<Vec<_>>(), file_path: file_path };
 	}
 }
 impl Index<Coord> for Sheet {
@@ -120,19 +132,16 @@ fn main() {
 	let args: Vec<String> = env::args().collect();
 
 	if args.len() == 1 {
-		println!("Error no input file");
+		eprintln!("Error no input file");
 		process::exit(0);
 	}else if args.len() > 2 {
-		println!("Error to many arguments");
+		eprintln!("Error to many arguments");
 		process::exit(0);
 	}
 
-	let sheet = Sheet::new(match fs::read_to_string(&args[1]) {
-		Ok(c) => c,
-		Err(err) => {
-			println!("Error could not read file due to `{}`", err);
-			process::exit(0);
-		}
-	});
-	print!("{:#?}", sheet);
+	let sheet = Sheet::new(args[1].clone(), fs::read_to_string(&args[1]).unwrap_or_else(|err|{
+		eprintln!("Error could not read file due to `{}`", err);
+		process::exit(0);
+	}));
+	println!("{:#?}", sheet);
 }
