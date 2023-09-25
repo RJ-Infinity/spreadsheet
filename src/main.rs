@@ -39,20 +39,48 @@ pub enum CellValue {
 pub struct Cell{
 	value: CellValue,
 	string_backing: Option<String>,
-	changed: bool,
 }
 #[derive(Debug)]
 pub struct Sheet{
 	cells: Vec<Vec<Cell>>,
 	file_path: String,
 }
+#[derive(Debug)]
+pub enum CoordFromRefErr{
+	InvalidLetter,
+	InvalidNumber,
+}
 impl Sheet {
+	pub fn coord_from_ref(refer: &str, split: Option<(usize, usize, usize)>) -> Result<Coord,CoordFromRefErr> {
+		if split == None{ todo!(); }
+		let split = split.unwrap();
+		let mut j = split.1 - 1;
+		let mut mult = 26;
+		let mut x = 0;
+
+		let mut chr = refer.chars().nth(j).unwrap();
+		if chr < 'A' || chr > 'Z' {return Err(CoordFromRefErr::InvalidLetter); }
+		x += chr as usize - 'A' as usize;
+		j-=1;
+		while j >= split.0 {
+			chr = refer.chars().nth(j).unwrap();
+			if chr < 'A' || chr > 'Z' {return Err(CoordFromRefErr::InvalidLetter); }
+			x += (chr as usize - 'A' as usize + 1)*mult;
+			mult*=26;
+			j-=1;
+		}
+		return Ok(Coord { x: x, y: match refer[split.1..split.2].parse(){
+			Ok(y) => y,
+			Err(_) => return Err(CoordFromRefErr::InvalidNumber),
+		}});
+	}
 	fn get_next_value(file_path: &str, line_no: usize, line: &str, start: usize, mut curr: Option<CellValue>) -> (Option<Cell>, Option<char>){
 		let mut i = start;
 		let mut val_end = false;
 		let mut in_esc = false;
 		let mut ws_count = 0;
-		let mut fn_start = 0;
+		let mut fn_start = None;
+		let mut ref_start = (None,None);
 		while i < line.len() {
 			let chr = line.chars().nth(i).unwrap();
 			// print!("===========================\nchr: {:#?}\ni: {:#?}\nval_end: {:#?}\nin_esc: {:#?}\nws_count: {:#?}\nfn_start: {:#?}\n",chr,i,val_end,in_esc,ws_count,fn_start);
@@ -62,7 +90,6 @@ impl Sheet {
 						return (Some(Cell {
 							value: CellValue::Empty,
 							string_backing: Some(line[start..i].to_string()),
-							changed: false,
 						}), Some(chr));
 					}else{curr = match chr {
 						' ' | '\t' => None,
@@ -78,7 +105,6 @@ impl Sheet {
 							if chr == ',' || chr == ')' { return (Some(Cell {
 								value: v.clone(),
 								string_backing: Some(line[start..i].to_string()),
-								changed: false,
 							}), Some(chr));}else if chr != ' ' && chr != '\t' { exit_with_err_at(&file_path, line_no, i, "Only whitespace alowed after the end of a string."); }
 						} else if in_esc {
 							s.push(match chr {
@@ -102,7 +128,6 @@ impl Sheet {
 						return (Some(Cell {
 							value: v.clone(),
 							string_backing: Some(line[start..i].to_string()),
-							changed: false,
 						}), Some(chr));
 					} else if !val_end { match chr {
 						'0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '_' => {/* do nothing */},
@@ -114,14 +139,17 @@ impl Sheet {
 						if chr == ',' || chr == ')' { return (Some(Cell {
 							value: v.clone(),
 							string_backing: Some(line[start..i].to_string()),
-							changed: false,
-						}), Some(chr));}else if chr != ' ' && chr != '\t' { exit_with_err_at(&file_path, line_no, i, "Only whitespace alowed after the end of a function call."); }
+						}), Some(chr));}else if chr != ' ' && chr != '\t' { exit_with_err_at(&file_path, line_no, i, "Only whitespace alowed after the end of a function call or reference."); }
 					}else{
-						if chr >= 'a' && chr <= 'z' {
-							if fn_start == 0 {fn_start = i;}
-						}else if fn_start > 0 && chr == '('{
+						if chr >= 'A' && chr <= 'Z' {
+							if fn_start.is_some() {exit_with_err_at(&file_path, line_no, i, "characters in a function must all be lowercase");}
+							if ref_start.0 == None {ref_start.0 = Some(i);}
+						}else if chr >= 'a' && chr <= 'z' {
+							if ref_start.0.is_some() {exit_with_err_at(&file_path, line_no, i, "characters in a reference must all be uppercase");}
+							if fn_start == None {fn_start = Some(i);}
+						}else if fn_start.is_some() && chr == '('{
 							*formula = Formula::Function(
-								line[fn_start..i].to_string(),
+								line[fn_start.unwrap()..i].to_string(),
 								Vec::new()
 							);
 							while {
@@ -148,31 +176,37 @@ impl Sheet {
 										},_ => unreachable!()}
 									}, _ => unreachable!(),}
 
-									// println!("{:#?}",cell.clone().unwrap().string_backing);
-
 									i += cell.unwrap().string_backing.unwrap().len() + 1;
 									
 									if end_chr == Some(')'){
-										println!("{:#?}", line.chars().nth(i));
 										val_end = true;
 										break;
 									} else if end_chr != Some(',')
 									{exit_with_err_at(&file_path, line_no, i, "Must close the bracket previously opened.")}
 								}
 							}
-						}else if (chr >= '0' && chr <= '9') || chr == '+' || chr == '-' || chr == '"'{
-							// println!("RECURSE");
+						}else if ref_start.0.is_some() && chr >= '0' && chr <= '9'{
+							if ref_start.1 == None {ref_start.1 = Some(i);}
+						}else if ref_start.0 == None && ((chr >= '0' && chr <= '9') || chr == '+' || chr == '-' || chr == '"') {
 							let value = Self::get_next_value(file_path, line_no, line, i-ws_count, None);
-							// println!("END RECURSE");
 							*formula = Formula::Litteral(value.clone().0.unwrap().value.into());
-							// println!("UNDER VAL {:#?}",value.0.clone().unwrap().string_backing.unwrap());
 							i += value.0.unwrap().string_backing.unwrap().len()-ws_count;
 							return (Some(Cell {
 								value: v.clone(),
 								string_backing: Some(line[start..i].to_string()),
-								changed: false,
 							}), value.1);
-						}else if chr == ' ' || chr == '\t' { ws_count += 1; }
+						}else if chr == ' ' || chr == '\t' {
+							if fn_start.is_some() { exit_with_err_at(&file_path, line_no, i, "Expected a bracket (`(`) after the name of a function not a whitespace character."); }
+							if ref_start.0.is_some() {
+								if ref_start.1 == None {exit_with_err_at(&file_path, line_no, i, "A reference requires a numeric component however got a whitespace character.")}
+								*formula = Formula::Reference(Self::coord_from_ref(
+									line,
+									Some((ref_start.0.unwrap(),ref_start.1.unwrap(),i))
+								).unwrap());
+								val_end = true;
+							}
+							ws_count += 1;
+						}
 						else {exit_with_err_at(&file_path, line_no, i, format!("`{}` is not valid character in this part of a formula", chr).as_str())}
 					}},
 					_ => unreachable!(),
@@ -188,13 +222,18 @@ impl Sheet {
 					if num_str == "+" || num_str == "-" { exit_with_err_at(&file_path, line_no, i, "A number must contain more than just the sign."); }
 					*n = num_str.parse().unwrap();
 				}
-				CellValue::Formula(_f) => {},
+				CellValue::Formula(f) => if ref_start.0.is_some() && !matches!(f, Formula::Reference(_)) {
+					if ref_start.1 == None {exit_with_err_at(&file_path, line_no, i, "A reference requires a numeric component however got a whitespace character.")}
+					*f = Formula::Reference(Self::coord_from_ref(
+						line,
+						Some((ref_start.0.unwrap(),ref_start.1.unwrap(),i))
+					).unwrap());
+				},
 				_ => unreachable!(),
 			}
 			return (Some(Cell {
 				value: v.clone(),
 				string_backing: Some(line[start..].to_string()),
-				changed: false,
 			}), None);
 		}
 		return (None, None);
@@ -228,7 +267,6 @@ impl Index<Coord> for Sheet {
 			None => &Cell {
 				value: CellValue::Empty,
 				string_backing: None,
-				changed: true,
 			}
 		}
 	}
