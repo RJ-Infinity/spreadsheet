@@ -3,16 +3,39 @@ use std::process;
 use std::env;
 use std::ops::Index;
 use std::boxed::Box;
+use std::io::Write;
+use std::collections::HashMap;
+extern crate termsize;
+use getch::Getch;
 
 fn exit_with_err_at(file_path: &str, line_i: usize, col_i: usize, msg: &str) -> !{
 	eprintln!("{}:{}:{} Error: {}", file_path, line_i+1, col_i+1, msg);
 	process::exit(1);
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Coord {
 	x: usize,
 	y: usize,
+}
+
+pub struct FancyIO{}
+impl FancyIO{
+	fn flush(){ let _ = std::io::stdout().flush(); }
+	fn write(text: &str){let _ = std::io::stdout().write_all(text.as_bytes());}
+	fn move_cur(x :usize, y:usize){
+		Self::write(&format!("\x1b[{}G",x));
+		Self::write(&format!("\x1b[{}d",y));
+	}
+	fn set_up_screen(){
+		Self::write("\x1b7");
+		Self::write("\x1B[?1049h");
+		Self::move_cur(0,0);
+	}
+	fn restore_screen(){
+		Self::write("\x1B[?1049l");
+		Self::write("\x1b8");
+	}
 }
 
 #[derive(Clone, Debug)]
@@ -38,12 +61,13 @@ pub enum CellValue {
 #[derive(Clone, Debug)]
 pub struct Cell{
 	value: CellValue,
-	string_backing: Option<String>,
+	string_backing: String,
 }
 #[derive(Debug)]
 pub struct Sheet{
-	cells: Vec<Vec<Cell>>,
+	cells: HashMap<Coord, Cell>,
 	file_path: String,
+	selected_cell: Coord,
 }
 #[derive(Debug)]
 pub enum CoordFromRefErr{
@@ -88,7 +112,7 @@ impl Sheet {
 				if chr == ',' || chr == ')' {
 					return (Some(Cell {
 						value: CellValue::Empty,
-						string_backing: Some(line[start..i].to_string()),
+						string_backing: line[start..i].to_string(),
 					}), Some(chr));
 				}else{curr = match chr {
 					' ' | '\t' => None,
@@ -102,7 +126,7 @@ impl Sheet {
 					if val_end {
 						if chr == ',' || chr == ')' { return (Some(Cell {
 							value: v.clone(),
-							string_backing: Some(line[start..i].to_string()),
+							string_backing: line[start..i].to_string(),
 						}), Some(chr));}else if chr != ' ' && chr != '\t' { exit_with_err_at(&file_path, line_no, i, "Only whitespace alowed after the end of a string."); }
 					} else if in_esc {
 						s.push(match chr {
@@ -125,7 +149,7 @@ impl Sheet {
 					*n = num_str.parse().unwrap();
 					return (Some(Cell {
 						value: v.clone(),
-						string_backing: Some(line[start..i].to_string()),
+						string_backing: line[start..i].to_string(),
 					}), Some(chr));
 				} else if !val_end { match chr {
 					'0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '_' => {/* do nothing */},
@@ -136,7 +160,7 @@ impl Sheet {
 				CellValue::Formula(ref mut formula) => {if val_end {
 					if chr == ',' || chr == ')' { return (Some(Cell {
 						value: v.clone(),
-						string_backing: Some(line[start..i].to_string()),
+						string_backing: line[start..i].to_string(),
 					}), Some(chr));}else if chr != ' ' && chr != '\t' { exit_with_err_at(&file_path, line_no, i, "Only whitespace alowed after the end of a function call or reference."); }
 				}else{
 					if chr >= 'A' && chr <= 'Z' {
@@ -174,7 +198,7 @@ impl Sheet {
 									},_ => unreachable!()}
 								}, _ => unreachable!(),}
 
-								i += cell.unwrap().string_backing.unwrap().len() + 1;
+								i += cell.unwrap().string_backing.len() + 1;
 								
 								if end_chr == Some(')'){
 									val_end = true;
@@ -188,10 +212,10 @@ impl Sheet {
 					}else if ref_start.0 == None && ((chr >= '0' && chr <= '9') || chr == '+' || chr == '-' || chr == '"') {
 						let value = Self::get_next_value(file_path, line_no, line, i-ws_count, None);
 						*formula = Formula::Litteral(value.clone().0.unwrap().value.into());
-						i += value.0.unwrap().string_backing.unwrap().len()-ws_count;
+						i += value.0.unwrap().string_backing.len()-ws_count;
 						return (Some(Cell {
 							value: v.clone(),
-							string_backing: Some(line[start..i].to_string()),
+							string_backing: line[start..i].to_string(),
 						}), value.1);
 					}else if chr == ' ' || chr == '\t' {
 						if fn_start.is_some() { exit_with_err_at(&file_path, line_no, i, "Expected a bracket (`(`) after the name of a function not a whitespace character."); }
@@ -212,7 +236,7 @@ impl Sheet {
 		}
 		if let Some(ref mut v) = curr {
 			match v {
-				CellValue::String(_) => if !val_end {exit_with_err_at(&file_path, line_no, i, "There is no closing quote.");},
+				CellValue::String(_) => if !val_end {exit_with_err_at(&file_path, line_no, i, "There is no closing quote. To use a newline in a string use the escape sequence `\\n` instead.");},
 				CellValue::Number(ref mut n) => {
 					let num_str = line[start..i].trim().replace("_", "");
 					if num_str == "+" || num_str == "-" { exit_with_err_at(&file_path, line_no, i, "A number must contain more than just the sign."); }
@@ -229,43 +253,48 @@ impl Sheet {
 			}
 			return (Some(Cell {
 				value: v.clone(),
-				string_backing: Some(line[start..].to_string()),
+				string_backing: line[start..].to_string(),
 			}), None);
 		}
 		return (None, None);
 	}
 	pub fn new(file_path:String, str: String) -> Self {
-		return Sheet { cells: str.replace("\r","").split("\n").enumerate().map(|(i, line)| {
-			let mut rv: Vec<Cell> = Vec::new();
+		return Sheet { cells: str.replace("\r","").split("\n").enumerate().fold(HashMap::new(), |mut acc, (i, line)| {
 			let mut start = 0;
 			let mut cell;
 			let mut end_chr;
 			let mut chr_i = 0;
+			let mut x = 0;
 			(cell, end_chr) = Self::get_next_value(&file_path, i, line, start, None);
 			while let Some(ref c) = cell {
-				chr_i += c.string_backing.as_ref().unwrap().len()+1;
+				chr_i += c.string_backing.len()+1;
 				if end_chr != None && end_chr != Some(',') {
 					exit_with_err_at(&file_path, i, chr_i-1, "invalid character");
 				}
-				rv.push((*c).clone());
-				start += c.string_backing.as_ref().unwrap().len() + 1;
+				start += c.string_backing.len() + 1;
+				acc.insert(Coord {x: x, y: i}, c.clone());
 				(cell, end_chr) = Self::get_next_value(&file_path, i, line, start, None);
+				x+=1;
 			}
-			return rv;
-		}).collect::<Vec<_>>(), file_path: file_path };
+			return acc;
+		}), file_path: file_path, selected_cell: Coord {x:0,y:0} };
+	}
+	pub fn draw(&self, width: usize, _height: usize) {
+		FancyIO::write("═╣ ");
+		FancyIO::write(&self.file_path);
+		FancyIO::write(" ╠");
+		FancyIO::write(&"═".repeat(width - self.file_path.len() - 5));
+		FancyIO::write("\n┌");
+		FancyIO::write(&"─".repeat(width - 2));
+		FancyIO::write("┐\n│");
+		// FancyIO::write(&self[self.selected_cell].string_backing);
+		FancyIO::move_cur(2, width - 1);
+		FancyIO::write("│");
 	}
 }
 impl Index<Coord> for Sheet {
 	type Output = Cell;
-	fn index(&self, c: Coord) -> &Cell {
-		match self.cells.get(c.x).and_then(|cell|cell.get(c.y)) {
-			Some(cell) => &cell,
-			None => &Cell {
-				value: CellValue::Empty,
-				string_backing: None,
-			}
-		}
-	}
+	fn index(&self, c: Coord) -> &Cell {&self.cells[&c]}
 }
 
 
@@ -285,4 +314,16 @@ fn main() {
 		process::exit(0);
 	}));
 	println!("{:#?}", sheet);
+	// if termsize::get().is_none() {
+	// 	eprintln!("Cannot Determine the size of your console. try using a different terminal application.");
+	// 	process::exit(0);
+	// }
+	// let getch = Getch::new();
+	// FancyIO::set_up_screen();
+	// let size = termsize::get().unwrap();
+	// sheet.draw(size.cols as usize, size.rows as usize);
+	// FancyIO::flush();
+	// getch.getch();
+	// FancyIO::restore_screen();
+	// FancyIO::flush();
 }
