@@ -4,6 +4,7 @@ use std::env;
 use std::ops::Index;
 use std::boxed::Box;
 use std::io::Write;
+use std::cmp;
 use std::collections::HashMap;
 extern crate termsize;
 use getch::Getch;
@@ -18,9 +19,46 @@ pub struct Coord {
 	x: usize,
 	y: usize,
 }
+impl Coord {
+	pub fn from_ref(refer: &str, split: Option<(usize, usize, usize)>) -> Result<Self,CoordFromRefErr> {
+		if split == None{ todo!(); }
+		let split = split.unwrap();
+		let mut j = split.1 - 1;
+		let mut mult = 26;
+		let mut x = 0;
 
-pub struct FancyIO{}
-impl FancyIO{
+		let mut chr = refer.chars().nth(j).unwrap();
+		if chr < 'A' || chr > 'Z' {return Err(CoordFromRefErr::InvalidLetter); }
+		x += chr as usize - 'A' as usize;
+		if j > 0{
+			j-=1;
+			while j >= split.0 {
+				chr = refer.chars().nth(j).unwrap();
+				if chr < 'A' || chr > 'Z' {return Err(CoordFromRefErr::InvalidLetter); }
+				x += (chr as usize - 'A' as usize + 1)*mult;
+				mult*=26;
+				if j == 0{break;}
+				j-=1;
+			}
+		}
+		return Ok(Coord { x: x, y: match refer[split.1..split.2].parse::<usize>(){
+			Ok(y) => y-1,
+			Err(_) => return Err(CoordFromRefErr::InvalidNumber),
+		}});
+	}
+	fn single_digit_b26(i: usize)->char{
+		if i < 26 { return ('A' as usize + i) as u8 as char; }
+		panic!("index was not single digit sized");
+	}
+	pub fn index_to_b26(i: usize) -> String{
+		if i < 26 { return Self::single_digit_b26(i).to_string(); }
+		return Self::index_to_b26((i / 26)-1)+&Self::single_digit_b26(i % 26).to_string();
+	}
+	pub fn to_ref(&self) -> String {Self::index_to_b26(self.x)+&format!("{}",self.y)}
+}
+
+pub struct IO{}
+impl IO{
 	fn flush(){ let _ = std::io::stdout().flush(); }
 	fn write(text: &str){let _ = std::io::stdout().write_all(text.as_bytes());}
 	fn move_cur(x :usize, y:usize){
@@ -30,7 +68,7 @@ impl FancyIO{
 	fn set_up_screen(){
 		Self::write("\x1b7");
 		Self::write("\x1B[?1049h");
-		Self::move_cur(0,0);
+		Self::move_cur(1,1);
 	}
 	fn restore_screen(){
 		Self::write("\x1B[?1049l");
@@ -69,35 +107,12 @@ pub struct Sheet{
 	file_path: String,
 	selected_cell: Coord,
 }
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum CoordFromRefErr{
 	InvalidLetter,
 	InvalidNumber,
 }
 impl Sheet {
-	pub fn coord_from_ref(refer: &str, split: Option<(usize, usize, usize)>) -> Result<Coord,CoordFromRefErr> {
-		if split == None{ todo!(); }
-		let split = split.unwrap();
-		let mut j = split.1 - 1;
-		let mut mult = 26;
-		let mut x = 0;
-
-		let mut chr = refer.chars().nth(j).unwrap();
-		if chr < 'A' || chr > 'Z' {return Err(CoordFromRefErr::InvalidLetter); }
-		x += chr as usize - 'A' as usize;
-		j-=1;
-		while j >= split.0 {
-			chr = refer.chars().nth(j).unwrap();
-			if chr < 'A' || chr > 'Z' {return Err(CoordFromRefErr::InvalidLetter); }
-			x += (chr as usize - 'A' as usize + 1)*mult;
-			mult*=26;
-			j-=1;
-		}
-		return Ok(Coord { x: x, y: match refer[split.1..split.2].parse(){
-			Ok(y) => y,
-			Err(_) => return Err(CoordFromRefErr::InvalidNumber),
-		}});
-	}
 	fn get_next_value(file_path: &str, line_no: usize, line: &str, start: usize, mut curr: Option<CellValue>) -> (Option<Cell>, Option<char>){
 		let mut i = start;
 		let mut val_end = false;
@@ -221,7 +236,7 @@ impl Sheet {
 						if fn_start.is_some() { exit_with_err_at(&file_path, line_no, i, "Expected a bracket (`(`) after the name of a function not a whitespace character."); }
 						if ref_start.0.is_some() {
 							if ref_start.1 == None {exit_with_err_at(&file_path, line_no, i, "A reference requires a numeric component however got a whitespace character.")}
-							*formula = Formula::Reference(Self::coord_from_ref(
+							*formula = Formula::Reference(Coord::from_ref(
 								line,
 								Some((ref_start.0.unwrap(),ref_start.1.unwrap(),i))
 							).unwrap());
@@ -244,7 +259,7 @@ impl Sheet {
 				}
 				CellValue::Formula(f) => if ref_start.0.is_some() && !matches!(f, Formula::Reference(_)) {
 					if ref_start.1 == None {exit_with_err_at(&file_path, line_no, i, "A reference requires a numeric component however got a whitespace character.")}
-					*f = Formula::Reference(Self::coord_from_ref(
+					*f = Formula::Reference(Coord::from_ref(
 						line,
 						Some((ref_start.0.unwrap(),ref_start.1.unwrap(),i))
 					).unwrap());
@@ -279,17 +294,76 @@ impl Sheet {
 			return acc;
 		}), file_path: file_path, selected_cell: Coord {x:0,y:0} };
 	}
-	pub fn draw(&self, width: usize, _height: usize) {
-		FancyIO::write("═╣ ");
-		FancyIO::write(&self.file_path);
-		FancyIO::write(" ╠");
-		FancyIO::write(&"═".repeat(width - self.file_path.len() - 5));
-		FancyIO::write("\n┌");
-		FancyIO::write(&"─".repeat(width - 2));
-		FancyIO::write("┐\n│");
-		// FancyIO::write(&self[self.selected_cell].string_backing);
-		FancyIO::move_cur(2, width - 1);
-		FancyIO::write("│");
+	fn fill_line_interval(width: usize, interval: usize, chr: char, ichr: char){
+		let mut i = 0;
+		while i<width {
+			IO::write(&chr.to_string().repeat(cmp::min(interval, width-i)));
+			i += interval + 1;
+			if i<=width { IO::write(&ichr.to_string()); }
+		}
+	}
+	pub fn draw(&self, width: usize, height: usize) {
+		IO::move_cur(1,1);
+		IO::write("═╣ ");
+		IO::write(&self.file_path);
+		IO::write(" ╠");
+		IO::write(&"═".repeat(width - self.file_path.len() - 5));
+		IO::write("\n┌");
+		IO::write(&"─".repeat(width - 2));
+		IO::write("┐\n│");
+		IO::write(&self[self.selected_cell].string_backing);
+		IO::write(&" ".repeat(width - self[self.selected_cell].string_backing.len() - 2));
+		IO::write("│\n└");
+		IO::write(&"─".repeat(width - 2));
+		IO::write("┘\n┌");
+		let cell_width = 5;
+		Self::fill_line_interval(width - 1, cell_width, '─', '┬');
+		let mut i = 1;
+		IO::write("\n│");
+		let mut j = 0;
+		while i<width {
+			let content = if j > 0 { Coord::index_to_b26(j-1) } else { "".to_string() };
+			let space = cmp::min(cell_width, width-i);
+			if content.len() > space{
+				IO::write(&format!("{}…",&content[..space-1]));
+			}else{
+				IO::write(&format!("{:01$}",&content,space));
+			}
+			i += cell_width + 1;
+			if i<=width { IO::write("│"); }
+			j+=1
+		}
+		IO::write("\n├");
+		Self::fill_line_interval(width - 1, cell_width, '─', '┼');
+		IO::write("\n");
+		i=7;
+		let top_left = Coord{x:0, y:0};
+		let mut curr = top_left;
+		while i<height{
+			IO::write("│");
+			j = 1;
+			curr.x = top_left.x;
+			while j<width {
+				let content = if j == 1 {format!("{}", curr.y+1)} else {format!("{},{}",curr.x,curr.y)};
+				if j != 1 {curr.x+=1;}
+				let space = cmp::min(cell_width, width-j);
+				if content.len() > space{
+					IO::write(&format!("{}…",&content[..space-1]));
+				}else{
+					IO::write(&format!("{:01$}",&content,space));
+				}
+				j += cell_width + 1;
+				if j<=width { IO::write("│"); }
+			}
+			i+=1;
+			if i<height {
+				IO::write("\n├");
+				Self::fill_line_interval(width-1, cell_width, '─', '┼');
+			}
+			i+=1;
+			curr.y+=1;
+		}
+		IO::move_cur(self[self.selected_cell].string_backing.len()+2, 3);
 	}
 }
 impl Index<Coord> for Sheet {
@@ -313,17 +387,17 @@ fn main() {
 		eprintln!("Error could not read file due to `{}`", err);
 		process::exit(0);
 	}));
-	println!("{:#?}", sheet);
-	// if termsize::get().is_none() {
-	// 	eprintln!("Cannot Determine the size of your console. try using a different terminal application.");
-	// 	process::exit(0);
-	// }
-	// let getch = Getch::new();
-	// FancyIO::set_up_screen();
-	// let size = termsize::get().unwrap();
-	// sheet.draw(size.cols as usize, size.rows as usize);
-	// FancyIO::flush();
-	// getch.getch();
-	// FancyIO::restore_screen();
-	// FancyIO::flush();
+	// println!("{:#?}",sheet);
+	if termsize::get().is_none() {
+		eprintln!("Cannot Determine the size of your console. try using a different terminal application.");
+		process::exit(0);
+	}
+	let getch = Getch::new();
+	IO::set_up_screen();
+	let size = termsize::get().unwrap();
+	sheet.draw(size.cols as usize, size.rows as usize);
+	IO::flush();
+	_ = getch.getch();
+	IO::restore_screen();
+	IO::flush();
 }
